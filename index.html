@@ -3,47 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>F-16 vs Su-27: The Dogfight</title>
+    <title>Ammo.js Softbody Dogfight</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', monospace; user-select: none; }
-        
-        /* HUD 介面 */
-        #hud-layer {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            pointer-events: none;
-        }
-        
-        .hud-box {
-            position: absolute; border: 2px solid rgba(0, 255, 0, 0.6);
-            background: rgba(0, 20, 0, 0.3); padding: 10px; color: #00ff00;
-            font-weight: bold; text-shadow: 0 0 5px #00ff00;
-        }
-
+        #hud-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .hud-box { position: absolute; border: 2px solid rgba(0, 255, 0, 0.6); background: rgba(0, 20, 0, 0.3); padding: 10px; color: #00ff00; font-weight: bold; text-shadow: 0 0 5px #00ff00; }
         #top-info { top: 20px; left: 50%; transform: translateX(-50%); text-align: center; }
         #weapon-status { bottom: 20px; right: 20px; text-align: right; }
-        #target-box { 
-            position: absolute; width: 60px; height: 60px; 
-            border: 2px solid red; border-radius: 5px;
-            transform: translate(-50%, -50%); display: none;
-            box-shadow: 0 0 10px red;
-        }
-        
-        #start-btn {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            padding: 20px 50px; font-size: 24px; background: #ff3300; color: white;
-            border: none; cursor: pointer; pointer-events: auto; z-index: 999;
-            box-shadow: 0 0 20px rgba(255, 51, 0, 0.8); text-transform: uppercase;
-        }
-
-        .blinking { animation: blink 0.5s infinite; color: red; border-color: red; }
-        @keyframes blink { 50% { opacity: 0; } }
-        
-        #subtitle {
-            position: absolute; bottom: 100px; width: 100%; text-align: center;
-            font-size: 20px; color: yellow; text-shadow: 2px 2px 0 #000;
-            font-family: sans-serif;
-        }
+        #target-box { position: absolute; width: 60px; height: 60px; border: 2px solid red; border-radius: 5px; transform: translate(-50%, -50%); display: none; box-shadow: 0 0 10px red; }
+        #subtitle { position: absolute; bottom: 100px; width: 100%; text-align: center; font-size: 24px; color: yellow; text-shadow: 2px 2px 0 #000; font-weight: bold; }
+        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-size: 20px; }
+        #start-btn { position: absolute; top: 60%; left: 50%; transform: translate(-50%, -50%); padding: 15px 40px; background: #ff3300; color: white; border: none; font-size: 20px; cursor: pointer; display: none; pointer-events: auto; }
     </style>
+
+    <!-- 載入 Ammo.js (使用穩定的 JS 版本以免 WASM 載入問題) -->
+    <script src="https://cdn.jsdelivr.net/gh/kripken/ammo.js@HEAD/builds/ammo.js"></script>
 
     <!-- Import Maps -->
     <script type="importmap">
@@ -51,7 +25,6 @@
             "imports": {
                 "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
                 "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-                "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js",
                 "yuka": "https://cdn.jsdelivr.net/npm/yuka@0.7.1/build/yuka.module.js",
                 "simplex-noise": "https://cdn.jsdelivr.net/npm/simplex-noise@4.0.1/dist/esm/simplex-noise.js"
             }
@@ -60,18 +33,12 @@
     <script src="https://cdn.jsdelivr.net/npm/howler@2.2.4/dist/howler.min.js"></script>
 </head>
 <body>
-
-    <button id="start-btn">ENGAGE HOSTILE (開始空戰)</button>
+    <div id="loading">INITIALIZING PHYSICS ENGINE (AMMO.JS)...</div>
+    <button id="start-btn">START SIMULATION</button>
 
     <div id="hud-layer">
-        <div id="top-info" class="hud-box">
-            STATUS: <span id="status-text">PATROL</span><br>
-            TIME: <span id="mission-time">00:00</span>
-        </div>
-        <div id="weapon-status" class="hud-box">
-            WEAPON: <span id="current-weapon">AIM-120</span><br>
-            AMMO: <span id="ammo-count">2</span>
-        </div>
+        <div id="top-info" class="hud-box">STATUS: <span id="status-text">INIT</span></div>
+        <div id="weapon-status" class="hud-box">WEAPON: <span id="current-weapon">AIM-120</span></div>
         <div id="target-box"></div>
         <div id="subtitle"></div>
     </div>
@@ -79,76 +46,70 @@
     <script type="module">
         import * as THREE from 'three';
         import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-        import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js';
-        import * as CANNON from 'cannon-es';
         import * as YUKA from 'yuka';
         import { createNoise2D } from 'simplex-noise';
 
         // --- 全域變數 ---
         let scene, camera, renderer, clock;
-        let physicsWorld;
+        let physicsWorld; // Ammo World
         let entityManager, time = 0;
-        let terrainMesh;
         
-        // 戰機物件
-        const jets = {
-            f16: { mesh: null, vehicle: null, body: null, hp: 100 },
-            su27: { mesh: null, vehicle: null, body: null, hp: 100, crashed: false }
+        // Ammo 變數
+        let transformAux1;
+        let softBodyHelpers;
+        const margin = 0.05;
+        
+        // 遊戲物件
+        const jets = { 
+            f16: { mesh: null, vehicle: null }, 
+            su27: { mesh: null, vehicle: null, body: null, softBody: null, isSoft: false } 
         };
-        
-        // 飛彈與特效
         const missiles = [];
         const particles = [];
-        
-        // 聲音
         const sounds = {};
         
-        // 狀態機
-        let gameStarted = false;
-        let phase = 0; // 0:Patrol, 1:Miss, 2:Dogfight, 3:Kill, 4:Crash
+        let phase = 0;
+        let terrainMesh;
 
-        // 設定
-        const SETTINGS = {
-            terrainSize: 4000,
-            camFollowDist: 20,
-            camFollowHeight: 5
-        };
-
-        // --- 初始化 ---
-        document.getElementById('start-btn').addEventListener('click', () => {
-            document.getElementById('start-btn').style.display = 'none';
+        // --- 初始化 Ammo ---
+        Ammo().then(function(AmmoLib) {
+            document.getElementById('loading').innerText = "PHYSICS READY. LOAD ASSETS...";
             initGame();
         });
 
         async function initGame() {
             initThree();
             initAudio();
-            initPhysics();
+            setupPhysicsWorld();
             initYuka();
             createTerrain();
+            
             await loadModels();
             
-            gameStarted = true;
-            clock = new THREE.Clock();
-            animate();
-            
-            // 啟動腳本
-            startScriptedSequence();
+            document.getElementById('loading').style.display = 'none';
+            const btn = document.getElementById('start-btn');
+            btn.style.display = 'block';
+            btn.addEventListener('click', () => {
+                btn.style.display = 'none';
+                clock = new THREE.Clock();
+                animate();
+                startSequence();
+            });
         }
 
         function initThree() {
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x87CEEB);
-            scene.fog = new THREE.FogExp2(0x87CEEB, 0.0005);
+            scene.fog = new THREE.Fog(0x87CEEB, 200, 4000);
 
-            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 10000);
-            
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 5000);
+            camera.position.set(0, 50, 100);
+
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.shadowMap.enabled = true;
             document.body.appendChild(renderer.domElement);
 
-            // 燈光
             const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
             scene.add(hemiLight);
             const dirLight = new THREE.DirectionalLight(0xffffff, 2);
@@ -156,316 +117,401 @@
             dirLight.castShadow = true;
             dirLight.shadow.mapSize.width = 2048;
             dirLight.shadow.mapSize.height = 2048;
-            dirLight.shadow.camera.far = 3000;
             scene.add(dirLight);
-            
-            // 太陽光暈
-            const textureLoader = new THREE.TextureLoader();
-            const textureFlare0 = textureLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/lensflare/lensflare0.png');
-            const lensflare = new Lensflare();
-            lensflare.addElement(new LensflareElement(textureFlare0, 700, 0, new THREE.Color(0xffaa00)));
-            dirLight.add(lensflare);
 
-            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        function setupPhysicsWorld() {
+            const collisionConfiguration = new Ammo.btSoftBodyRigidBodyCollisionConfiguration();
+            const dispatcher = new Ammo.btCollisionDispatcher(collisionConfiguration);
+            const broadphase = new Ammo.btDbvtBroadphase();
+            const solver = new Ammo.btSequentialImpulseConstraintSolver();
+            const softBodySolver = new Ammo.btDefaultSoftBodySolver();
+            
+            physicsWorld = new Ammo.btSoftRigidDynamicsWorld(dispatcher, broadphase, solver, collisionConfiguration, softBodySolver);
+            physicsWorld.setGravity(new Ammo.btVector3(0, -9.81, 0));
+            physicsWorld.getWorldInfo().set_m_gravity(new Ammo.btVector3(0, -9.81, 0));
+
+            transformAux1 = new Ammo.btTransform();
+            softBodyHelpers = new Ammo.btSoftBodyHelpers();
         }
 
         function initAudio() {
             sounds.bgm = new Howl({ src: ['https://assets.mixkit.co/music/preview/mixkit-action-sport-rock-beat-267.mp3'], loop: true, volume: 0.3 });
             sounds.jetLoop = new Howl({ src: ['https://assets.mixkit.co/sfx/preview/mixkit-jet-engine-loop-1678.mp3'], loop: true, volume: 0.4 });
-            sounds.missileLaunch = new Howl({ src: ['https://assets.mixkit.co/sfx/preview/mixkit-missile-launch-2532.mp3'], volume: 0.8 });
-            sounds.explosion = new Howl({ src: ['https://assets.mixkit.co/sfx/preview/mixkit-fuel-explosion-1705.mp3'], volume: 1.0 });
-            sounds.lockOn = new Howl({ src: ['https://assets.mixkit.co/sfx/preview/mixkit-sci-fi-alert-alarm-1013.mp3'], loop: true, volume: 0.5, rate: 2.0 });
-            
-            sounds.bgm.play();
-            sounds.jetLoop.play();
-        }
-
-        function initPhysics() {
-            physicsWorld = new CANNON.World();
-            physicsWorld.gravity.set(0, -9.81, 0);
+            sounds.missile = new Howl({ src: ['https://assets.mixkit.co/sfx/preview/mixkit-missile-launch-2532.mp3'], volume: 0.8 });
+            sounds.boom = new Howl({ src: ['https://assets.mixkit.co/sfx/preview/mixkit-fuel-explosion-1705.mp3'], volume: 1.0 });
+            sounds.lock = new Howl({ src: ['https://assets.mixkit.co/sfx/preview/mixkit-sci-fi-alert-alarm-1013.mp3'], loop: true, volume: 0.5, rate: 2.0 });
         }
 
         function initYuka() {
             entityManager = new YUKA.EntityManager();
         }
 
-        // --- 地形生成 ---
+        // --- 地形 (Ammo Physics) ---
         function createTerrain() {
             const noise2D = createNoise2D();
-            const size = SETTINGS.terrainSize;
-            const res = 64;
-            const geometry = new THREE.PlaneGeometry(size, size, res-1, res-1);
+            const size = 3000;
+            const res = 64; // 網格密度
+            
+            const geometry = new THREE.PlaneGeometry(size, size, res - 1, res - 1);
             geometry.rotateX(-Math.PI / 2);
             
             const vertices = geometry.attributes.position.array;
-            const heightData = [];
             
-            for(let i=0; i<res; i++) {
-                const row = [];
-                for(let j=0; j<res; j++) {
-                    const x = i * (size/res);
-                    const z = j * (size/res);
-                    let y = noise2D(x*0.001, z*0.001) * 200;
-                    y += noise2D(x*0.005, z*0.005) * 50;
-                    y = Math.abs(y);
-                    if(y < 10) y = 10; // 海平面
-                    row.push(y);
-                }
-                heightData.push(row);
-            }
-            
-            // Sync Three.js mesh
-            for (let i = 0, k = 0; i < res; i++) {
-                for (let j = 0; j < res; j++) {
-                    vertices[k * 3 + 1] = heightData[i][res - 1 - j];
-                    k++;
-                }
+            // 產生高低起伏
+            for (let i = 0; i < vertices.length; i += 3) {
+                const x = vertices[i];
+                const z = vertices[i + 2];
+                let y = noise2D(x * 0.001, z * 0.001) * 150;
+                y += noise2D(x * 0.005, z * 0.005) * 30;
+                if(y < 0) y = 0;
+                vertices[i + 1] = y;
             }
             geometry.computeVertexNormals();
-            
-            const material = new THREE.MeshStandardMaterial({ 
-                color: 0x3b5323, roughness: 0.8, metalness: 0.1 
-            });
+
+            const material = new THREE.MeshStandardMaterial({ color: 0x3b5323, roughness: 0.8 });
             terrainMesh = new THREE.Mesh(geometry, material);
-            terrainMesh.position.y = -100;
             terrainMesh.receiveShadow = true;
+            terrainMesh.position.y = -100;
             scene.add(terrainMesh);
 
-            // Cannon Heightfield
-            const hfShape = new CANNON.Heightfield(heightData, { elementSize: size/res });
-            const hfBody = new CANNON.Body({ mass: 0 });
-            hfBody.addShape(hfShape);
-            hfBody.position.set(-size/2, -100, size/2);
-            hfBody.quaternion.setFromEuler(-Math.PI/2, 0, 0);
-            physicsWorld.addBody(hfBody);
+            // 建立 Ammo 地形 (Triangle Mesh Shape)
+            const ammoMesh = new Ammo.btTriangleMesh();
+            const p1 = new Ammo.btVector3();
+            const p2 = new Ammo.btVector3();
+            const p3 = new Ammo.btVector3();
+            
+            // 將 Three.js 的三角形數據輸入 Ammo
+            const indexAttribute = geometry.index;
+            const posAttribute = geometry.attributes.position;
+            
+            for (let i = 0; i < indexAttribute.count; i += 3) {
+                const i1 = indexAttribute.getX(i);
+                const i2 = indexAttribute.getX(i + 1);
+                const i3 = indexAttribute.getX(i + 2);
+
+                p1.setValue(posAttribute.getX(i1), posAttribute.getY(i1), posAttribute.getZ(i1));
+                p2.setValue(posAttribute.getX(i2), posAttribute.getY(i2), posAttribute.getZ(i2));
+                p3.setValue(posAttribute.getX(i3), posAttribute.getY(i3), posAttribute.getZ(i3));
+                
+                ammoMesh.addTriangle(p1, p2, p3, true);
+            }
+
+            const shape = new Ammo.btBvhTriangleMeshShape(ammoMesh, true, true);
+            const transform = new Ammo.btTransform();
+            transform.setIdentity();
+            transform.setOrigin(new Ammo.btVector3(0, -100, 0));
+            
+            const motionState = new Ammo.btDefaultMotionState(transform);
+            const localInertia = new Ammo.btVector3(0, 0, 0);
+            const rbInfo = new Ammo.btRigidBodyConstructionInfo(0, motionState, shape, localInertia);
+            const body = new Ammo.btRigidBody(rbInfo);
+            physicsWorld.addRigidBody(body);
         }
 
-        // --- 模型載入 ---
         async function loadModels() {
             const loader = new GLTFLoader();
-            const load = (url) => new Promise(resolve => loader.load(url, resolve));
+            const load = url => new Promise(res => loader.load(url, res));
 
-            // 1. F-16
+            // F-16
             const f16Gltf = await load('f-16_jet.glb');
             jets.f16.mesh = f16Gltf.scene;
-            setupJet(jets.f16, new THREE.Vector3(0, 400, 200), 'F-16');
+            setupYukaVehicle(jets.f16, new THREE.Vector3(0, 300, 600));
 
-            // 2. Su-27
+            // Su-27
             const su27Gltf = await load('sukhoi_su-27skm.glb');
             jets.su27.mesh = su27Gltf.scene;
-            setupJet(jets.su27, new THREE.Vector3(0, 400, -200), 'Su-27');
+            setupYukaVehicle(jets.su27, new THREE.Vector3(0, 300, -600));
             
-            // 預載飛彈模型到記憶體，稍後複製
+            // 預載飛彈
             window.assetAIM120 = (await load('aim-120_amraam_missile.glb')).scene;
             window.assetAIM9 = (await load('aim-9_missile.glb')).scene;
         }
 
-        function setupJet(jetObj, startPos, name) {
-            const mesh = jetObj.mesh;
+        function setupYukaVehicle(jet, pos) {
+            const mesh = jet.mesh;
             mesh.scale.set(1.5, 1.5, 1.5);
-            mesh.traverse(c => { if(c.isMesh) { c.castShadow = true; c.receiveShadow = true; }});
+            mesh.traverse(c => { if(c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
             scene.add(mesh);
 
-            // Yuka Vehicle (AI Movement)
             const vehicle = new YUKA.Vehicle();
-            vehicle.position.copy(startPos);
-            vehicle.maxSpeed = 150; // High speed
-            vehicle.maxForce = 100; // Agility
-            vehicle.mass = 1;
+            vehicle.position.copy(pos);
+            vehicle.maxSpeed = 150;
+            vehicle.maxForce = 80;
             entityManager.add(vehicle);
-            jetObj.vehicle = vehicle;
-
-            // Cannon Body (Physics for Crash)
-            const shape = new CANNON.Sphere(2);
-            const body = new CANNON.Body({ mass: 5000, shape: shape });
-            body.position.copy(startPos);
-            body.collisionFilterGroup = 2; // AI Phase physics off
-            physicsWorld.addBody(body);
-            jetObj.body = body;
+            jet.vehicle = vehicle;
             
             // 尾焰
-            jetObj.afterburner = createAfterburner();
+            jet.afterburner = createParticles();
         }
 
-        function createAfterburner() {
+        function createParticles() {
             const geo = new THREE.BufferGeometry();
             const count = 50;
             const positions = new Float32Array(count * 3);
-            for(let i=0; i<count*3; i++) positions[i] = 0;
+            for(let i=0; i<count*3; i++) positions[i] = 9999;
             geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-            const mat = new THREE.PointsMaterial({
-                color: 0xff5500, size: 2, transparent: true, opacity: 0.8,
-                blending: THREE.AdditiveBlending, depthWrite: false
-            });
+            const mat = new THREE.PointsMaterial({ color: 0xff5500, size: 3, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending });
             const points = new THREE.Points(geo, mat);
             scene.add(points);
             return points;
         }
 
-        // --- 腳本邏輯 (The Movie Director) ---
-        function startScriptedSequence() {
+        // --- 軟體物理轉換核心 (The Magic) ---
+        function convertToSoftBody(jet) {
+            // 1. 停止 YUKA AI 控制
+            entityManager.remove(jet.vehicle);
+            
+            // 2. 獲取 Three.js 的 Geometry (從 GLTF 中提取)
+            // 為了簡化計算，我們需要合併網格或只取最大的機身部分
+            // 這裡我們將遍歷所有 Mesh，創建一個合併的 SoftBody (簡化版：只取第一個主要 Mesh)
+            let targetGeo = null;
+            jet.mesh.traverse(c => {
+                if (c.isMesh && c.geometry.attributes.position.count > 100 && !targetGeo) {
+                    targetGeo = c.geometry;
+                    // 確保網格有索引 (Indexed)，Ammo 需要索引來建立 SoftBody
+                    if (!targetGeo.index) {
+                        // 如果沒有 index，這裡為了簡單起見，我們可能無法建立完美的軟體
+                        // 但大部分 glTF 導出都有 index
+                    }
+                }
+            });
+
+            if (!targetGeo) return; // 失敗
+
+            const bufferGeom = targetGeo;
+            const posAttr = bufferGeom.attributes.position;
+            const indexAttr = bufferGeom.index;
+
+            // 3. 建立 Ammo SoftBody
+            const ammoMesh = new Ammo.btSoftBodyHelpers();
+            
+            // 轉發頂點數據
+            // 注意：我們需要將 Three.js 的頂點轉換成 Ammo 接受的數組
+            // 這裡為了效能，我們直接使用 CreateFromTriMesh 函數的包裝器比較困難
+            // 我們手動構建
+            
+            /* 由於在 JS 中傳遞大量頂點數組給 WASM 有困難，
+               我們這裡使用一個取巧的方法：
+               建立一個較低解析度的 "Physics Mesh" (隱形)，綁定視覺 Mesh。
+               但為了滿足 "真實變形" 的要求，我們嘗試直接操作。
+            */
+
+            const scale = 1.5;
+            const position = jet.mesh.position;
+            const quaternion = jet.mesh.quaternion;
+
+            // 將幾何體轉換為世界座標以便初始化
+            bufferGeom.applyMatrix4(new THREE.Matrix4().compose(position, quaternion, new THREE.Vector3(scale, scale, scale)));
+            
+            // 這裡我們簡化：建立一個 "布料" 覆蓋飛機，或者用凸包
+            // 由於直接從任意 mesh 建立 softbody 在 ammo.js 有點複雜，我們使用 Volume SoftBody
+            
+            // --- 替代方案：直接建立一個長方體 SoftBody 代表飛機，然後更新視覺 Mesh ---
+            // 但這不夠真實。我們堅持使用 CreateFromTriMesh。
+            
+            const vertices = posAttr.array;
+            const indices = indexAttr ? indexAttr.array : null;
+            
+            if(!indices) return;
+
+            const softBody = softBodyHelpers.CreateFromTriMesh(
+                physicsWorld.getWorldInfo(),
+                vertices,
+                indices,
+                indices.length / 3,
+                true
+            );
+
+            const sbConfig = softBody.get_m_cfg();
+            sbConfig.set_viterations(40);
+            sbConfig.set_piterations(40);
+            sbConfig.set_kDF(0.5); // 摩擦
+            sbConfig.set_kDP(0.01); // 阻尼
+            sbConfig.set_kPR(200); // 壓力 (保持形狀)
+
+            softBody.setTotalMass(1000, false);
+            
+            // 設定材質剛性 (讓它像金屬而不是布)
+            const material = softBody.appendMaterial();
+            material.set_m_kLST(0.8); // Linear stiffness
+            material.set_m_kAST(0.8); // Angular stiffness
+            
+            // 加入世界
+            physicsWorld.addSoftBody(softBody, 1, -1);
+            
+            // 保存引用以便更新
+            jet.softBody = softBody;
+            jet.isSoft = true;
+            jet.geometry = bufferGeom; // 用來更新視覺
+            
+            // 施加爆炸力 (Impulse)
+            // 對軟體施加力需要遍歷節點，或者簡單地讓重力接管並給個初速
+            softBody.addForce(new Ammo.btVector3(0, -5000, 0)); // 向下重擊
+            softBody.addTorque(new Ammo.btVector3(1000, 500, 0)); // 旋轉
+        }
+
+        // --- 遊戲邏輯 ---
+        function startSequence() {
+            sounds.bgm.play();
+            sounds.jetLoop.play();
+            
             const f16 = jets.f16.vehicle;
             const su27 = jets.su27.vehicle;
 
-            // Phase 0: Merge (對頭飛行)
-            setSubtitle("FOX 3! AIM-120 LAUNCHED! (發射主動雷達導引飛彈)");
+            // Phase 1: 對頭
             f16.velocity.z = -150;
             su27.velocity.z = 150;
-            
-            // Phase 1: Fire AIM-120 (T+2s)
+            updateSubtitle("MERGE! FIGHT'S ON!", 2);
+
+            // Phase 2: AIM-120 (Miss)
             setTimeout(() => {
-                fireMissile('AIM-120', jets.f16, jets.su27, false); // False = Miss
-                setSubtitle("SU-27 EVADING! MISSILE MISSED! (敵機閃避，脫靶)");
+                fireMissile('AIM-120', jets.f16, jets.su27, false);
+                updateSubtitle("FOX 3! AIM-120 OUT!", 2);
                 
-                // Su-27 Break turn
+                // Su-27 閃避
                 su27.velocity.x = 80;
+                su27.velocity.y = 50;
             }, 2000);
 
-            // Phase 2: Dogfight (T+5s)
+            // Phase 3: Dogfight
             setTimeout(() => {
-                phase = 2;
+                phase = 1;
                 document.getElementById('status-text').innerText = "DOGFIGHT";
-                document.getElementById('status-text').classList.add('blinking');
-                setSubtitle("ENGAGING DOGFIGHT! SWITCHING TO AIM-9 (進入纏鬥，切換響尾蛇)");
+                updateSubtitle("SPLIT S! SWITCH TO GUNS/HEAT!", 3);
                 
-                // Yuka Behaviors
-                // F-16 追蹤 Su-27
-                const pursuit = new YUKA.PursuitBehavior(su27, 2);
-                f16.steering.add(pursuit);
+                // AI 行為
+                f16.steering.add(new YUKA.PursuitBehavior(su27, 2));
+                su27.steering.add(new YUKA.EvadeBehavior(f16, 3));
+                su27.steering.add(new YUKA.WanderBehavior(10, 5, 2)); // 隨機機動
                 
-                // Su-27 閃避 + 亂飛
-                const evade = new YUKA.EvadeBehavior(f16, 5);
-                su27.steering.add(evade);
-                // 增加一點隨機遊走讓軌跡更自然
-                const wander = new YUKA.WanderBehavior(10, 5, 2);
-                su27.steering.add(wander);
-                
-                // Update weapon UI
+                sounds.lock.play();
                 document.getElementById('current-weapon').innerText = "AIM-9X";
-                document.getElementById('ammo-count').innerText = "1";
-                sounds.lockOn.play();
-                
-            }, 5000);
-
-            // Phase 3: Kill Shot (T+13s)
-            setTimeout(() => {
-                phase = 3;
-                sounds.lockOn.rate(4.0); // 急促鎖定聲
                 document.getElementById('target-box').style.display = 'block';
-                setSubtitle("TONE! GOOD TONE! FOX 2! (鎖定目標！發射！)");
-            }, 13000);
+            }, 6000);
 
+            // Phase 4: Kill
             setTimeout(() => {
-                fireMissile('AIM-9', jets.f16, jets.su27, true); // True = Hit
-            }, 14000);
+                fireMissile('AIM-9', jets.f16, jets.su27, true);
+                updateSubtitle("FOX 2! KILL SHOT!", 2);
+            }, 12000);
         }
 
         function fireMissile(type, source, target, willHit) {
-            sounds.missileLaunch.play();
-            
-            // Clone mesh
-            const template = type === 'AIM-120' ? window.assetAIM120 : window.assetAIM9;
-            if(!template) return;
-            
-            const mesh = template.clone();
-            mesh.scale.set(1,1,1);
+            sounds.missile.play();
+            const mesh = (type === 'AIM-120' ? window.assetAIM120 : window.assetAIM9).clone();
             scene.add(mesh);
-            
-            // Set initial position (under wing)
-            const spawnOffset = new THREE.Vector3(2, -1, 0).applyQuaternion(source.mesh.quaternion);
-            mesh.position.copy(source.mesh.position).add(spawnOffset);
+            mesh.position.copy(source.mesh.position).add(new THREE.Vector3(0,-2,0));
             mesh.quaternion.copy(source.mesh.quaternion);
 
-            const missile = {
+            missiles.push({
                 mesh: mesh,
-                velocity: new THREE.Vector3(0, 0, 300).applyQuaternion(source.mesh.quaternion), // Initial boost
+                vel: new THREE.Vector3(0, 0, 300).applyQuaternion(source.mesh.quaternion),
                 target: target,
-                type: type,
                 willHit: willHit,
-                life: 0,
-                smoke: createAfterburner() // Reuse smoke effect
-            };
-            missiles.push(missile);
+                life: 0
+            });
         }
 
-        // --- 核心更新循環 ---
+        function updateSubtitle(text, duration) {
+            const el = document.getElementById('subtitle');
+            el.innerText = text;
+            setTimeout(() => el.innerText = "", duration * 1000);
+        }
+
         function animate() {
             requestAnimationFrame(animate);
             const dt = clock.getDelta();
             time += dt;
 
+            // 1. 更新物理
+            physicsWorld.stepSimulation(dt, 10);
+
+            // 2. 更新 AI
             entityManager.update(dt);
-            physicsWorld.step(1/60, dt, 3);
 
-            // 1. 更新飛機
-            updateJet(jets.f16, dt);
-            updateJet(jets.su27, dt);
+            // 3. 更新實體
+            updateJet(jets.f16);
+            updateJet(jets.su27);
+            
+            // 4. 更新軟體網格 (將 Ammo 節點位置同步回 Three.js 頂點)
+            if (jets.su27.isSoft) {
+                const softBody = jets.su27.softBody;
+                const geometry = jets.su27.geometry;
+                const volumePositions = geometry.attributes.position.array;
+                const nodes = softBody.get_m_nodes();
+                
+                // 遍歷所有節點更新位置
+                // 這非常耗效能，但這是實現真實變形的唯一方法
+                for (let i = 0, j = 0; i < volumePositions.length; i += 3, j++) {
+                    const node = nodes.at(j);
+                    const nodePos = node.get_m_x();
+                    volumePositions[i] = nodePos.x();
+                    volumePositions[i + 1] = nodePos.y();
+                    volumePositions[i + 2] = nodePos.z();
+                }
+                geometry.attributes.position.needsUpdate = true;
+                geometry.computeVertexNormals(); // 重新計算光照
+            }
 
-            // 2. 更新飛彈
+            // 5. 飛彈
             updateMissiles(dt);
-
-            // 3. 攝影機運鏡
+            
+            // 6. 運鏡
             updateCamera();
 
-            // 4. 特效
-            updateParticles(dt);
+            // 7. 特效
+            updateParticles();
 
-            // UI
-            document.getElementById('mission-time').innerText = time.toFixed(2);
-            if(phase === 3 && jets.su27.mesh) {
-                // Update Target Box UI
+            // UI Target Box
+            if (phase === 1 && !jets.su27.isSoft) {
                 const screenPos = jets.su27.mesh.position.clone().project(camera);
                 const x = (screenPos.x * .5 + .5) * window.innerWidth;
                 const y = (screenPos.y * -.5 + .5) * window.innerHeight;
                 const box = document.getElementById('target-box');
                 box.style.left = x + 'px';
                 box.style.top = y + 'px';
+            } else {
+                document.getElementById('target-box').style.display = 'none';
             }
 
             renderer.render(scene, camera);
         }
 
-        function updateJet(jet, dt) {
-            if (!jet.crashed) {
-                // Sync Yuka to Three & Cannon
+        function updateJet(jet) {
+            if (!jet.isSoft) {
                 jet.mesh.position.copy(jet.vehicle.position);
                 jet.mesh.quaternion.copy(jet.vehicle.rotation);
                 
-                // Bank visual (簡單的滾轉效果)
-                // 根據轉向速度讓飛機側傾
-                const banking = -jet.vehicle.velocity.x * 0.01; 
-                jet.mesh.rotateZ(banking);
-
-                // Update Body position for later use
-                jet.body.position.copy(jet.mesh.position);
-                jet.body.quaternion.copy(jet.mesh.quaternion);
-
-                // Bounds Check (防止飛出地圖)
+                // 滾轉視覺效果
+                const bank = -jet.vehicle.velocity.x * 0.02;
+                jet.mesh.rotateZ(bank);
+                
+                // 邊界檢查
                 if(jet.vehicle.position.y < 50) jet.vehicle.position.y = 50;
-                if(jet.vehicle.position.length() > 2000) {
-                    const toCenter = new THREE.Vector3().sub(jet.vehicle.position).normalize();
-                    jet.vehicle.velocity.add(toCenter.multiplyScalar(5));
-                }
-            } else {
-                // Physics takeover (Crash)
-                jet.mesh.position.copy(jet.body.position);
-                jet.mesh.quaternion.copy(jet.body.quaternion);
             }
+            // 如果是 SoftBody，位置由物理引擎決定，不需要這裡更新
 
-            // Afterburner effect
-            if(jet.afterburner && !jet.crashed) {
-                const positions = jet.afterburner.geometry.attributes.position.array;
-                const tailPos = new THREE.Vector3(0,0,-5).applyQuaternion(jet.mesh.quaternion).add(jet.mesh.position);
+            // 尾焰
+            if(jet.afterburner && !jet.isSoft) {
+                const pos = jet.afterburner.geometry.attributes.position.array;
+                const tail = new THREE.Vector3(0,0,-5).applyQuaternion(jet.mesh.quaternion).add(jet.mesh.position);
                 for(let i=0; i<50; i++) {
                     if(Math.random()>0.5) {
-                        positions[i*3] = tailPos.x + (Math.random()-0.5)*2;
-                        positions[i*3+1] = tailPos.y + (Math.random()-0.5)*2;
-                        positions[i*3+2] = tailPos.z + (Math.random()-0.5)*2;
-                    } else {
-                        positions[i*3+1] = -9999; // Hide
-                    }
+                        pos[i*3] = tail.x + (Math.random()-0.5)*2;
+                        pos[i*3+1] = tail.y + (Math.random()-0.5)*2;
+                        pos[i*3+2] = tail.z + (Math.random()-0.5)*2;
+                    } else pos[i*3+1] = 9999;
                 }
                 jet.afterburner.geometry.attributes.position.needsUpdate = true;
+            } else if (jet.afterburner) {
+                scene.remove(jet.afterburner); // 墜毀後移除尾焰
             }
         }
 
@@ -474,161 +520,77 @@
                 const m = missiles[i];
                 m.life += dt;
                 
-                // Guidance Logic
-                if (m.life > 0.5) { // Delay before tracking
-                    if (m.willHit || (m.life < 3.0 && !m.willHit)) {
-                        // Homing
+                if (m.life > 0.5) {
+                    if (m.willHit) {
                         const targetPos = m.target.mesh.position.clone();
-                        const direction = new THREE.Vector3().subVectors(targetPos, m.mesh.position).normalize();
-                        
-                        // Slerp rotation towards target
-                        const targetQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), direction);
-                        m.mesh.quaternion.slerp(targetQuat, 0.1); // Turn rate
-                        
-                        // Apply velocity
-                        const speed = 400; // Missile is fast
-                        const vel = new THREE.Vector3(0,0,1).applyQuaternion(m.mesh.quaternion).multiplyScalar(speed);
-                        m.mesh.position.add(vel.multiplyScalar(dt));
-                    } else {
-                        // Miss: Fly straight / wander
+                        const dir = new THREE.Vector3().subVectors(targetPos, m.mesh.position).normalize();
+                        m.mesh.quaternion.slerp(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), dir), 0.1);
                         m.mesh.translateZ(400 * dt);
+                        
+                        if (m.mesh.position.distanceTo(targetPos) < 15) {
+                            triggerHit(m.target);
+                            scene.remove(m.mesh);
+                            missiles.splice(i, 1);
+                            continue;
+                        }
+                    } else {
+                        m.mesh.translateZ(400 * dt); // Miss
                     }
                 } else {
-                    m.mesh.translateZ(200 * dt); // Launch speed
+                    m.mesh.translateZ(200 * dt);
                 }
-
-                // Collision Detection (Simple distance check)
-                if (m.willHit && m.mesh.position.distanceTo(m.target.mesh.position) < 10) {
-                    triggerExplosion(m.target);
-                    scene.remove(m.mesh);
-                    scene.remove(m.smoke); // Remove smoke trail
-                    missiles.splice(i, 1);
-                    continue;
-                }
-
-                // Smoke trail update
-                if(m.smoke) {
-                    const pos = m.smoke.geometry.attributes.position.array;
-                    const tail = m.mesh.position;
-                    for(let k=0; k<50; k++) {
-                        if(Math.random()>0.8) {
-                            pos[k*3] = tail.x; pos[k*3+1] = tail.y; pos[k*3+2] = tail.z;
-                        }
-                    }
-                    m.smoke.geometry.attributes.position.needsUpdate = true;
-                }
-
-                // Timeout
-                if (m.life > 10) {
-                    scene.remove(m.mesh);
-                    if(m.smoke) scene.remove(m.smoke);
-                    missiles.splice(i, 1);
-                }
+                
+                if(m.life > 8) { scene.remove(m.mesh); missiles.splice(i, 1); }
             }
         }
 
-        function triggerExplosion(jet) {
-            setSubtitle("TARGET DESTROYED! SPLASH ONE! (目標擊毀！)");
-            sounds.explosion.play();
-            sounds.lockOn.stop();
-            document.getElementById('target-box').style.display = 'none';
-            document.getElementById('status-text').innerText = "TANGO DOWN";
-            document.getElementById('status-text').style.color = "red";
-
-            // 1. Visual Explosion
+        function triggerHit(jet) {
+            sounds.boom.play();
+            sounds.lock.stop();
+            updateSubtitle("TARGET DESTROYED! (目標擊毀)", 5);
+            
+            // 1. 爆炸特效
             for(let i=0; i<30; i++) {
                 const geo = new THREE.SphereGeometry(2);
                 const mat = new THREE.MeshBasicMaterial({color: 0xff5500});
-                const part = new THREE.Mesh(geo, mat);
-                part.position.copy(jet.mesh.position);
-                scene.add(part);
-                particles.push({
-                    mesh: part,
-                    vel: new THREE.Vector3((Math.random()-0.5)*100, (Math.random()-0.5)*100, (Math.random()-0.5)*100),
-                    life: 2.0
-                });
+                const p = new THREE.Mesh(geo, mat);
+                p.position.copy(jet.mesh.position);
+                scene.add(p);
+                particles.push({ mesh: p, vel: new THREE.Vector3((Math.random()-0.5)*100, (Math.random()-0.5)*100, (Math.random()-0.5)*100) });
             }
 
-            // 2. Mesh Deformation (Simulating Ammo.js Softbody)
-            jet.mesh.traverse(child => {
-                if (child.isMesh) {
-                    const positions = child.geometry.attributes.position;
-                    for(let k=0; k < positions.count; k++) {
-                        // 隨機破壞頂點
-                        if (Math.random() > 0.6) {
-                            const x = positions.getX(k);
-                            const y = positions.getY(k);
-                            const z = positions.getZ(k);
-                            positions.setXYZ(k, x + (Math.random()-0.5)*5, y + (Math.random()-0.5)*5, z + (Math.random()-0.5)*5);
-                        }
-                    }
-                    positions.needsUpdate = true;
-                }
-            });
-
-            // 3. Physics Physics Crash
-            jet.crashed = true;
-            entityManager.remove(jet.vehicle); // Disable AI
-            jet.body.collisionFilterGroup = 1; // Enable physics collision
-            jet.body.velocity.set(50, -50, 0); // Initial crash velocity
-            jet.body.angularVelocity.set(1, 0.5, 2); // Spin
-            
-            // Remove smoke emitter to stop trail
-            if(jet.afterburner) {
-                scene.remove(jet.afterburner);
-                jet.afterburner = null;
-            }
+            // 2. 轉換為 Ammo SoftBody (關鍵時刻)
+            convertToSoftBody(jet);
         }
 
-        function updateParticles(dt) {
-            for (let i = particles.length - 1; i >= 0; i--) {
+        function updateParticles() {
+            for(let i=particles.length-1; i>=0; i--) {
                 const p = particles[i];
-                p.life -= dt;
-                p.mesh.position.add(p.vel.clone().multiplyScalar(dt));
+                p.mesh.position.add(p.vel.clone().multiplyScalar(0.016));
                 p.mesh.scale.multiplyScalar(0.95);
-                if (p.life <= 0) {
-                    scene.remove(p.mesh);
-                    particles.splice(i, 1);
-                }
+                if(p.mesh.scale.x < 0.1) { scene.remove(p.mesh); particles.splice(i, 1); }
             }
         }
 
         function updateCamera() {
-            // Camera Logic:
-            // Phase 0-2: Follow F-16
-            // Phase 3: Follow Missile? Or F-16
-            // Phase 4: Follow crashing Su-27
-            
             let target = jets.f16.mesh;
-            let offset = new THREE.Vector3(0, 10, -30); // Chase view
+            let offset = new THREE.Vector3(0, 10, -30);
 
-            if (phase === 4 || jets.su27.crashed) {
-                target = jets.su27.mesh; // Follow crash
-                offset = new THREE.Vector3(20, 10, 20); // Side view of crash
-            } else if (missiles.length > 0 && missiles[missiles.length-1].willHit) {
-                // Missile Cam (Action Cam)
-                target = missiles[missiles.length-1].mesh;
-                offset = new THREE.Vector3(0, 2, -10);
+            if (jets.su27.isSoft) { // 墜毀時切換鏡頭
+                target = jets.su27.mesh; // SoftBody 驅動 Mesh，所以還是跟隨 Mesh
+                offset = new THREE.Vector3(30, 20, 30);
             }
 
-            if(target) {
-                const desiredPos = target.position.clone().add(offset.applyQuaternion(target.quaternion));
-                camera.position.lerp(desiredPos, 0.1);
+            if (target && !jets.su27.isSoft) {
+                const idealPos = target.position.clone().add(offset.applyQuaternion(target.quaternion));
+                camera.position.lerp(idealPos, 0.1);
+                camera.lookAt(target.position);
+            } else if (target) {
+                // 墜毀時鏡頭不跟隨旋轉，只跟隨位置
+                const idealPos = target.position.clone().add(new THREE.Vector3(30, 30, 30));
+                camera.position.lerp(idealPos, 0.05);
                 camera.lookAt(target.position);
             }
-        }
-        
-        function setSubtitle(text) {
-            const el = document.getElementById('subtitle');
-            el.innerText = text;
-            el.style.opacity = 1;
-            setTimeout(() => el.style.opacity = 0, 3000);
-        }
-
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
         }
     </script>
 </body>
